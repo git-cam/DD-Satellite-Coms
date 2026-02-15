@@ -1,20 +1,38 @@
 # DD-Satellite-Coms
 
-# Setup
+## Setup
 
+### 1. Install Dependencies
 
+**Client:**
+```bash
+cd client
+npm install
+```
 
-In the client folder
-DD-Satellite-Coms\client> npm install
-In the server folder
-DD-Satellite-Coms\server> npm install
+**Server:**
+```bash
+cd server
+npm install
+```
 
-Add a .env file with your N2YO_API_KEY in the server folder
+### 2. Configure Environment Variables
 
-In the client folder
-DD-Satellite-Coms\client> npm run build
+Create a `.env` file in the `server` folder with your API key:
+```
+N2YO_API_KEY=your_api_key_here
+```
 
-In the server folder
-DD-Satellite-Coms\server> node server.js
+### 3. Build the Client
+```bash
+cd client
+npm run build
+```
 
-Server will now be running on localhost port 3001
+### 4. Start the Server
+```bash
+cd server
+node server.js
+```
+
+The server will now be running on `http://localhost:3001`
