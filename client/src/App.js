@@ -5,83 +5,92 @@ import { useEffect, useState, useRef } from "react";
 import { generateHeatmap} from "./satUtil";
 
 function App() {
-  const [positions, setPositions] = useState([]);
+  const [coverageData, setCoverageData] = useState({ satellites: [] });
+  const [lat, setLat] = useState(45.42);  // Ottawa
+  const [lng, setLng] = useState(-75.7);
+  const [constellation, setConstellation] = useState('iridium');
   const [heatmapData, setHeatmapData] = useState([]);
-  const satrecsRef = useRef([]);
+  const [positions, setPositions] = useState([]);
   const globeRef = useRef();
 
+  // Fetch coverage (dynamic location)
+  async function fetchCoverage() {
+    const params = new URLSearchParams({ lat, lng, alt: 100 });
+    const response = await fetch(`/api/${constellation}/coverage?${params}`);
+    const data = await response.json();
+    setCoverageData(data);
+
+    // Filter visible + size by elevation
+    const positions = data.satellites
+      .filter(s => s.elevation > 0)
+      .map(s => ({
+        noradId: s.noradId,
+        lat: s.lat,
+        lng: s.lng,
+        altitude: s.altitudeKm / 6371,
+        size: Math.max(0.3, s.elevation / 20),  // Bigger = higher elev
+        available: s.available,
+        elevation: s.elevation
+      }));
+
+    setPositions(positions);
+    const heatmap = generateHeatmap(positions);
+    setHeatmapData(heatmap);
+  }
+
   useEffect(() => {
-    async function fetchTLEs() {
-      const response = await fetch("/api/iridium/tle");
-      const data = await response.json();
-
-      const now = new Date();
-
-      const sats = data.satellites.map(sat => {
-        const [l1, l2] = sat.tle.trim().split(/\r?\n/);
-        const satrec = satellite.twoline2satrec(l1, l2);
-
-        return {
-          noradId: sat.noradId,
-          satrec
-        };
-      });
-
-      satrecsRef.current = sats;
-
-      const positions = sats.map(({ noradId, satrec }) => {
-        const pv = satellite.propagate(satrec, now);
-        if (!pv.position) return null;
-
-        const gmst = satellite.gstime(now);
-        const geo = satellite.eciToGeodetic(pv.position, gmst);
-
-        return {
-          noradId,
-          lat: satellite.degreesLat(geo.latitude),
-          lng: satellite.degreesLong(geo.longitude),
-          altitude: geo.height / 6371
-        };
-      }).filter(Boolean);
-
-      setPositions(positions);
-      
-      const heatmap = generateHeatmap(positions);
-      setHeatmapData(heatmap);
-    }
-
-    fetchTLEs();
+    fetchCoverage();  // Initial Ottawa
   }, []);
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      const now = new Date();
-
-      const sats = satrecsRef.current.map(({ noradId, satrec }) => {
-        const pv = satellite.propagate(satrec, now);
-        if (!pv.position) return null;
-
-        const gmst = satellite.gstime(now);
-        const geo = satellite.eciToGeodetic(pv.position, gmst);
-
-        return {
-          noradId,
-          lat: satellite.degreesLat(geo.latitude),
-          lng: satellite.degreesLong(geo.longitude),
-          altitude: geo.height / 6371
-        };
-      }).filter(Boolean);
-
-      setPositions(sats);
-
-      const heatmap = generateHeatmap(sats);
-      setHeatmapData(heatmap);
-    }, 1000);
-
+    const interval = setInterval(fetchCoverage, 5000);  // Update every 5s
     return () => clearInterval(interval);
-  }, []);
+  }, [lat, lng, constellation]);  // Re-fetch on location change
 
   return (
+  <div className="App">
+    {/* Top Controls Panel */}
+    <div className="controls">
+      <h2>Sat Coverage Toolkit</h2>
+      
+      {/* Location Inputs */}
+      <label>
+        Lat: 
+        <input 
+          type="number" 
+          step="0.01" 
+          value={lat} 
+          onChange={(e) => setLat(+e.target.value)} 
+        />
+      </label>
+      
+      <label>
+        Lng: 
+        <input 
+          type="number" 
+          step="0.01" 
+          value={lng} 
+          onChange={(e) => setLng(+e.target.value)} 
+        />
+      </label>
+      
+      {/* Constellation Tabs */}
+      <select value={constellation} onChange={(e) => setConstellation(e.target.value)}>
+        <option value="iridium">Iridium (66 sats)</option>
+        <option value="starlink">Starlink (7k+ sats)</option>
+      </select>
+      
+      {/* Refresh Button */}
+      <button onClick={fetchCoverage}>Refresh Coverage</button>
+      
+      {/* Live Stats */}
+      <div className="stats">
+        <span>Visible: {coverageData.satellites.filter(s => s.available).length}</span>
+        <span>Max Elev: {Math.max(...coverageData.satellites.map(s => s.elevation || 0)).toFixed(1)}°</span>
+      </div>
+    </div>
+    
+    {/* 3D Globe */}
     <Globe
       ref={globeRef}
       globeImageUrl="/earth-blue-marble.jpg"
@@ -89,16 +98,21 @@ function App() {
       pointLat="lat"
       pointLng="lng"
       pointAltitude="altitude"
-      pointColor={() => "red"}
-      pointRadius={0.4}
-      pointsTransitionDuration={0}
-      
-      heatmapsData={[heatmapData]} 
-      heatmapBandwidth={2.5}       
+      pointColor={(d) => d.available ? 'lime' : 'red'}  // Green=usable!
+      pointRadius={(d) => Math.max(0.2, (d.elevation || 0) / 50)}
+      pointsTransitionDuration={500}
+      heatmapsData={heatmapData ? [heatmapData] : []}
+      heatmapBandwidth={2.5}
       heatmapColorSaturation={1.5}
-  
     />
-  );
+    
+    {/* Bottom Info */}
+    <div className="info">
+      Ottawa: {lat.toFixed(2)}°, {lng.toFixed(2)}° | Drag=rotate • Scroll=zoom • Green=elev&gt;10°+low path loss
+    </div>
+  </div>
+);
+
 }
 
 export default App;
