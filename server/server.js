@@ -36,9 +36,12 @@ async function getConstellationTLEs(constellation) {
   const url = `https://celestrak.org/NORAD/elements/gp.php?GROUP=${group.toUpperCase()}&FORMAT=tle&LIMIT=50`;
   
   try {
-    const resp = await axios.get(url, { timeout: 10000 });
+    const resp = await axios.get(url, { timeout: 10000,
+    headers: { 
+      'User-Agent': 'Mozilla/5.0 (Satellite-Demo/1.0)'  // Polite bot
+    } });
     const tleCount = parseTLEs(resp.data).length;
-    console.log(`LIVE ${constellation}: ${tleCount} TLEs`);
+    console.log(`LIVE ${group}: ${tleCount} TLEs`);
     return parseTLEs(resp.data);
   } catch (err) {
     if (err.response?.status === 403 || err.code === 'ECONNABORTED') {
@@ -46,12 +49,12 @@ async function getConstellationTLEs(constellation) {
       if (fs.existsSync(fallbackPath)) {
         const tleData = fs.readFileSync(fallbackPath, 'utf8');
         const tleCount = parseTLEs(tleData).length;
-        console.log(`FALLBACK ${constellation}: ${tleCount} TLEs (${group}.txt)`);
+        console.log(`FALLBACK ${group}: ${tleCount} TLEs (${group}.txt)`);
         return parseTLEs(tleData);
       }
     }
-    console.error(`${constellation}:`, err.message);
-    throw new Error(`Failed to fetch ${constellation} TLEs`);
+    console.error(`${group}:`, err.message);
+    throw new Error(`Failed to fetch ${group} TLEs`);
   }
 }
 
@@ -208,7 +211,6 @@ app.get('/api/:constellation/coverage', async (req, res) => {
 
         const elevation = satellite.radiansToDegrees(lookAngles.elevation);
         const rangeKm = lookAngles.rangeSat;
-        //console.log(`NORAD ${id}: elev=${elevation.toFixed(1)} range=${rangeKm}`); //debug
 
         if (Number.isFinite(rangeKm) && rangeKm > 0) {
           // Frequency by constellation
@@ -227,6 +229,10 @@ app.get('/api/:constellation/coverage', async (req, res) => {
             pathLossDb: Math.round(pathLossDb),
             available: elevation > 10 && pathLossDb < 160
           });
+          if (results.length % 5 === 0) {  // Every 5 sats
+            const visible = results.filter(r => r.available).length;
+            console.log(`📡 ${constellation}: ${visible}/${results.length} visible`);
+          }
         } else {
           results.push({
             noradId,
