@@ -1,5 +1,6 @@
 // server/index.js
 require('dotenv').config();
+const fs = require('fs');
 const express = require('express');
 const path = require('path');
 const axios = require('axios');
@@ -28,19 +29,30 @@ function parseTLEs(tleText) {
 }
 
 async function getConstellationTLEs(constellation) {
-  const groups = {
-    'iridium' : 'iridium',
-    'starlink': 'starlink',
-    'kuiper': 'kuiper'
-  };
-
+  const groups = { 'iridium': 'iridium', 'starlink': 'starlink', 'kuiper': 'kuiper' };
   const group = groups[constellation];
   if (!group) throw new Error(`Unknown constellation: ${constellation}`);
 
   const url = `https://celestrak.org/NORAD/elements/gp.php?GROUP=${group.toUpperCase()}&FORMAT=tle&LIMIT=50`;
-  const resp = await axios.get(url);
-
-  return parseTLEs(resp.data);
+  
+  try {
+    const resp = await axios.get(url, { timeout: 10000 });
+    const tleCount = parseTLEs(resp.data).length;
+    console.log(`LIVE ${constellation}: ${tleCount} TLEs`);
+    return parseTLEs(resp.data);
+  } catch (err) {
+    if (err.response?.status === 403 || err.code === 'ECONNABORTED') {
+      const fallbackPath = path.join(__dirname, 'tle-samples', `${constellation}.txt`);
+      if (fs.existsSync(fallbackPath)) {
+        const tleData = fs.readFileSync(fallbackPath, 'utf8');
+        const tleCount = parseTLEs(tleData).length;
+        console.log(`FALLBACK ${constellation}: ${tleCount} TLEs (${group}.txt)`);
+        return parseTLEs(tleData);
+      }
+    }
+    console.error(`${constellation}:`, err.message);
+    throw new Error(`Failed to fetch ${constellation} TLEs`);
+  }
 }
 
 app.use(express.static(path.resolve(__dirname, '../client/build')));
