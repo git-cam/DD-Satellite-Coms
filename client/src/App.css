@@ -1,38 +1,125 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body, html, #root {
+  height: 100vh;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
 .App {
-  text-align: center;
-}
-
-.App-logo {
-  height: 40vmin;
-  pointer-events: none;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .App-logo {
-    animation: App-logo-spin infinite 20s linear;
-  }
-}
-
-.App-header {
-  background-color: #282c34;
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  font-size: calc(10px + 2vmin);
+  position: relative;
+  height: 100vh;
+  background: #000;
   color: white;
 }
 
-.App-link {
+.controls {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(10px);
+  padding: 1.5rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  min-width: 280px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.controls h2 {
+  margin-bottom: 1rem;
+  font-size: 1.2rem;
   color: #61dafb;
 }
 
-@keyframes App-logo-spin {
-  from {
-    transform: rotate(0deg);
+.controls label {
+  display: block;
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+}
+
+.controls input[type="number"] {
+  width: 100px;
+  padding: 0.5rem;
+  margin-left: 0.5rem;
+  border: 1px solid #444;
+  border-radius: 6px;
+  background: #1a1a1a;
+  color: white;
+}
+
+.controls select {
+  width: 140px;
+  padding: 0.5rem;
+  margin: 0.5rem 0;
+  border: 1px solid #444;
+  border-radius: 6px;
+  background: #1a1a1a;
+  color: white;
+}
+
+.controls button {
+  width: 100%;
+  padding: 0.75rem;
+  background: linear-gradient(135deg, #61dafb, #21b1d4);
+  border: none;
+  border-radius: 8px;
+  color: #000;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 0.5rem;
+  transition: transform 0.2s;
+}
+
+.controls button:hover {
+  transform: scale(1.02);
+}
+
+.stats {
+  margin-top: 1rem;
+  font-size: 0.85rem;
+  opacity: 0.9;
+}
+
+.stats span {
+  display: block;
+  margin: 0.25rem 0;
+  color: #61dafb;
+}
+
+.info {
+  position: absolute;
+  bottom: 20px;
+  left: 20px;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 1rem;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  max-width: 300px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .controls {
+    left: 10px;
+    right: 10px;
+    top: 10px;
+    min-width: auto;
   }
-  to {
-    transform: rotate(360deg);
+  
+  .controls input, .controls select {
+    width: 100%;
+    margin: 0.25rem 0;
   }
+}
+
+/* Globe animations (optional) */
+.globe-container {
+  height: 100vh;
 }

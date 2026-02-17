@@ -4,20 +4,50 @@ const express = require('express');
 const path = require('path');
 const axios = require('axios');
 const fs = require('fs');
+const satellite = require('satellite.js')
+const tleCache = new Map();
+const CACHE_TTL = 60000; // 1 minute
 
 const app = express();
 const PORT = process.env.PORT || 3001; // Use port 3001 for the server
 
 app.use(express.static(path.resolve(__dirname, '../client/build')));
 
-app.get('/api/irridium/tle', async (req, res) => {
+async function getCachedTLE(noradId, apiKey) {
+  const key = `${noradId}`;
+  const cached = tleCache.get(key);
+  const now = Date.now();
+  
+  // Return cached if fresh
+  if (cached && now - cached.timestamp < CACHE_TTL) {
+    return cached.tle;
+  }
+  
+  // Fetch fresh
+  try {
+    const url = `https://api.n2yo.com/rest/v1/satellite/tle/${noradId}?apiKey=${apiKey}`;
+    const response = await axios.get(url);
+    
+    if (response.data && response.data.tle) {
+      const tleData = { tle: response.data.tle, timestamp: now };
+      tleCache.set(key, tleData);
+      return tleData.tle;
+    }
+  } catch (err) {
+    console.log(`N2YO fail ${noradId}:`, err.message);
+  }
+  
+  return null; // Cache miss + API fail
+}
+
+app.get('/api/iridium/tle', async (req, res) => {
   try {
     const apiKey = process.env.N2YO_API_KEY;
     if (!apiKey) {
       return res.status(500).json({ error: 'Missing N2YO_API_KEY in environment variables' });
     }
 
-    const filePath = path.resolve(__dirname, 'irridium.json');
+    const filePath = path.resolve(__dirname, 'iridium.json');
     const fileData = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
 
     const noradIds = fileData.testNoradIDs;
@@ -50,14 +80,15 @@ app.get('/api/irridium/tle', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch TLE data' });
   }
 });
-app.get('/api/irridium/pos', async (req, res) => {
+
+app.get('/api/iridium/pos', async (req, res) => {
   try {
     const apiKey = process.env.N2YO_API_KEY;
     if (!apiKey) {
       return res.status(500).json({ error: 'Missing N2YO_API_KEY in environment variables' });
     }
 
-    const filePath = path.resolve(__dirname, 'irridium.json');
+    const filePath = path.resolve(__dirname, 'iridium.json');
     const fileData = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
 
     const noradIds = fileData.testNoradIDs;
@@ -117,6 +148,85 @@ app.get('/api/irridium/pos', async (req, res) => {
     console.error(error.message);
     res.status(500).json({ error: 'Failed to fetch TLE data' });
   }
+});
+
+app.get('/api/iridium/coverage', async (req, res) => {
+  const { lat = 45.42, lng = -75.7, alt = 100 } = req.query;
+  const apiKey = process.env.N2YO_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: 'Missing N2YO_API_KEY' });
+
+  const filePath = path.resolve(__dirname, 'iridium.json');
+  const fileData = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  const noradIds = fileData.testNoradIDs;
+
+  const results = [];
+  for (const id of noradIds) {
+    try {
+      const tleString = await getCachedTLE(id, apiKey);
+      if (!tleString) {
+        console.log(`NORAD ${id}: No TLE (skipped)`);
+        continue;
+      }
+      const [line1, line2] = tleString.trim().split(/\r?\n/);
+      const satrec = satellite.twoline2satrec(line1, line2);
+      const now = new Date();
+      const pv = satellite.propagate(satrec, now);
+      if (!pv || !pv.position) continue;
+
+      const gmst = satellite.gstime(now);
+      const geo = satellite.eciToGeodetic(pv.position, gmst);
+      const satPos = {
+        lat: satellite.degreesLat(geo.latitude),
+        lng: satellite.degreesLong(geo.longitude),
+        altitudeKm: geo.height
+      };
+
+      const observerGd = {
+        longitude: satellite.degreesToRadians(lng),
+        latitude: satellite.degreesToRadians(lat),
+        height: alt / 1000  // meters -> km
+      };
+
+      // Satellite position in ECF
+      const satEcf = satellite.eciToEcf(pv.position, gmst);
+
+      // Look angles: observer (geodetic) + satellite (ECF)
+      const lookAngles = satellite.ecfToLookAngles(observerGd, satEcf);
+
+      const elevation = satellite.radiansToDegrees(lookAngles.elevation);
+      const rangeKm = lookAngles.rangeSat;
+      console.log(`NORAD ${id}: elev=${elevation.toFixed(1)} range=${rangeKm}`);
+      if (Number.isFinite(rangeKm) && rangeKm > 0) {
+        const pathLossDb = 32.44 + 20 * Math.log10(rangeKm) + 20 * Math.log10(14);
+        results.push({
+          noradId: id,
+          ...satPos,
+          elevation: +(elevation).toFixed(1),
+          rangeKm: Math.round(rangeKm),
+          pathLossDb: Math.round(pathLossDb),
+          available: elevation > 10 && pathLossDb < 160
+        });
+      } else {
+        results.push({
+          noradId: id,
+          ...satPos,
+          elevation: +(elevation).toFixed(1),
+          rangeKm: null,
+          pathLossDb: null,
+          available: false
+        });
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 300));  // Rate limit
+    } catch (err) {
+      console.error(`NORAD ${id}:`, err.message);
+    }
+  }
+
+  res.json({
+    observer: { lat, lng, alt: `${alt}m` },
+    satellites: results
+  });
 });
 
 app.get(/.*/, (req, res) => {
