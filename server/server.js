@@ -5,11 +5,40 @@ const path = require('path');
 const axios = require('axios');
 const fs = require('fs');
 const satellite = require('satellite.js')
+const tleCache = new Map();
+const CACHE_TTL = 60000; // 1 minute
 
 const app = express();
 const PORT = process.env.PORT || 3001; // Use port 3001 for the server
 
 app.use(express.static(path.resolve(__dirname, '../client/build')));
+
+async function getCachedTLE(noradId, apiKey) {
+  const key = `${noradId}`;
+  const cached = tleCache.get(key);
+  const now = Date.now();
+  
+  // Return cached if fresh
+  if (cached && now - cached.timestamp < CACHE_TTL) {
+    return cached.tle;
+  }
+  
+  // Fetch fresh
+  try {
+    const url = `https://api.n2yo.com/rest/v1/satellite/tle/${noradId}?apiKey=${apiKey}`;
+    const response = await axios.get(url);
+    
+    if (response.data && response.data.tle) {
+      const tleData = { tle: response.data.tle, timestamp: now };
+      tleCache.set(key, tleData);
+      return tleData.tle;
+    }
+  } catch (err) {
+    console.log(`N2YO fail ${noradId}:`, err.message);
+  }
+  
+  return null; // Cache miss + API fail
+}
 
 app.get('/api/iridium/tle', async (req, res) => {
   try {
@@ -133,12 +162,12 @@ app.get('/api/iridium/coverage', async (req, res) => {
   const results = [];
   for (const id of noradIds) {
     try {
-      const url = `https://api.n2yo.com/rest/v1/satellite/tle/${id}?apiKey=${apiKey}`;
-      const response = await axios.get(url);
-      const tleString = response.data.tle;
+      const tleString = await getCachedTLE(id, apiKey);
+      if (!tleString) {
+        console.log(`NORAD ${id}: No TLE (skipped)`);
+        continue;
+      }
       const [line1, line2] = tleString.trim().split(/\r?\n/);
-
-      // Propagate + coverage calc (your existing code)
       const satrec = satellite.twoline2satrec(line1, line2);
       const now = new Date();
       const pv = satellite.propagate(satrec, now);
@@ -152,23 +181,41 @@ app.get('/api/iridium/coverage', async (req, res) => {
         altitudeKm: geo.height
       };
 
-      const observerGd = { longitude: satellite.radiansLong(lng), latitude: satellite.radiansLat(lat), height: alt };
-      const observerEcf = satellite.geodeticToEcf(observerGd);
+      const observerGd = {
+        longitude: satellite.degreesToRadians(lng),
+        latitude: satellite.degreesToRadians(lat),
+        height: alt / 1000  // meters -> km
+      };
+
+      // Satellite position in ECF
       const satEcf = satellite.eciToEcf(pv.position, gmst);
-      const lookAngles = satellite.ecfToLookAngles(observerEcf, satEcf);
 
-      const elevation = satellite.degreesLat(lookAngles.elevation);
+      // Look angles: observer (geodetic) + satellite (ECF)
+      const lookAngles = satellite.ecfToLookAngles(observerGd, satEcf);
+
+      const elevation = satellite.radiansToDegrees(lookAngles.elevation);
       const rangeKm = lookAngles.range;
-      const pathLossDb = 32.44 + 20 * Math.log10(rangeKm) + 20 * Math.log10(14);
-
-      results.push({
-        noradId: id,
-        ...satPos,
-        elevation: +(elevation).toFixed(1),
-        rangeKm: Math.round(rangeKm),
-        pathLossDb: Math.round(pathLossDb),
-        available: elevation > 10 && pathLossDb < 160
-      });
+      
+      if (rangeKm && !isNaN(rangeKm)) {
+        const pathLossDb = 32.44 + 20 * Math.log10(rangeKm) + 20 * Math.log10(14);
+        results.push({
+          noradId: id,
+          ...satPos,
+          elevation: +(elevation).toFixed(1),
+          rangeKm: Math.round(rangeKm),
+          pathLossDb: Math.round(pathLossDb),
+          available: elevation > 10 && pathLossDb < 160
+        });
+      } else {
+        results.push({
+          noradId: id,
+          ...satPos,
+          elevation: +(elevation).toFixed(1),
+          rangeKm: null,
+          pathLossDb: null,
+          available: false  // Skip bad range
+        });
+      }
 
       await new Promise(resolve => setTimeout(resolve, 300));  // Rate limit
     } catch (err) {
