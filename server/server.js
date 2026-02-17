@@ -194,9 +194,9 @@ app.get('/api/iridium/coverage', async (req, res) => {
       const lookAngles = satellite.ecfToLookAngles(observerGd, satEcf);
 
       const elevation = satellite.radiansToDegrees(lookAngles.elevation);
-      const rangeKm = lookAngles.range;
-      
-      if (rangeKm && !isNaN(rangeKm)) {
+      const rangeKm = lookAngles.rangeSat;
+      console.log(`NORAD ${id}: elev=${elevation.toFixed(1)} range=${rangeKm}`);
+      if (Number.isFinite(rangeKm) && rangeKm > 0) {
         const pathLossDb = 32.44 + 20 * Math.log10(rangeKm) + 20 * Math.log10(14);
         results.push({
           noradId: id,
@@ -213,7 +213,7 @@ app.get('/api/iridium/coverage', async (req, res) => {
           elevation: +(elevation).toFixed(1),
           rangeKm: null,
           pathLossDb: null,
-          available: false  // Skip bad range
+          available: false
         });
       }
 
