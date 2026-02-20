@@ -1,81 +1,239 @@
-// src/components/CesiumGlobe.jsx
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import * as Cesium from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 
-Cesium.Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_TOKEN; // ✅ fixed
+Cesium.Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_TOKEN;
 
-function CesiumGlobe({ positions = [], lat = 45.42, lng = -75.7 }) {
+const UPDATE_HZ = 3;
+const ORBIT_POINTS = 180;
+const ORBIT_SPAN_MINUTES = 90;
+
+function CesiumGlobe({
+  lat = 45.42,
+  lng = -75.7,
+  constellation = "iridium",
+  maxSats = 300,
+  mode = "station" // "station" or "constellation"
+}) {
   const containerRef = useRef(null);
   const viewerRef = useRef(null);
+  const [sats, setSats] = useState([]);
+  const [showCoverage, setShowCoverage] = useState(true);
+  const [status, setStatus] = useState("Ready");
 
+  const selectedSatIds = useRef(new Set());
+  const orbitEntities = useRef(new Map());
+
+  // Initialize Cesium Viewer
   useEffect(() => {
-    if (viewerRef.current) return;
-
-    console.log("🌍 Mounting Cesium Viewer...");
-    console.log("Token:", import.meta.env.VITE_CESIUM_TOKEN ? "✅ found" : "❌ missing");
-
-    viewerRef.current = new Cesium.Viewer(containerRef.current, { // ✅ fixed
-      timeline: false,
-      animation: false,
+    const viewer = new Cesium.Viewer(containerRef.current, {
       baseLayerPicker: false,
-      navigationHelpButton: false,
-      homeButton: false,
-      sceneModePicker: false,
       geocoder: false,
-      fullscreenButton: false,
+      animation: true,
+      timeline: true,
+      baseLayer: Cesium.ImageryLayer.fromProviderAsync(
+        new Cesium.UrlTemplateImageryProvider({
+          url: "https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}.png",
+          credit: "© OpenStreetMap contributors © Stadia Maps",
+        })
+      ),
     });
 
-    viewerRef.current.camera.flyTo({
-      destination: Cesium.Cartesian3.fromDegrees(lng, lat, 10000000), // ✅ fixed
-    });
+    viewer.scene.skyBox.show = false;
+    viewer.scene.backgroundColor = Cesium.Color.BLACK;
+    viewer.scene.globe.showGroundAtmosphere = false;
+    viewer.scene.globe.enableLighting = false;
+    viewer.clock.multiplier = 20;
+    viewer.clock.shouldAnimate = true;
 
-    return () => {
-      if (viewerRef.current && !viewerRef.current.isDestroyed()) {
-        viewerRef.current.destroy();
-        viewerRef.current = null;
-      }
-    };
+    viewerRef.current = viewer;
+
+    return () => viewer.destroy();
   }, []);
 
+  // Fetch satellites from server
+  const fetchSats = useCallback(async () => {
+    setStatus("Loading...");
+
+    try {
+      const params = new URLSearchParams({
+        constellation,
+        lat,
+        lng,
+        maxSats,
+        mode
+      });
+
+      const res = await fetch(`/api/constellation-view?${params}`);
+      const data = await res.json();
+
+      setSats(data.satellites || []);
+
+      // Fly camera to server-suggested position
+      if (viewerRef.current && data.camera) {
+        viewerRef.current.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(
+            data.camera.lng,
+            data.camera.lat,
+            data.camera.height
+          )
+        });
+      }
+
+      setStatus(`${data.satellites.length} sats loaded`);
+    } catch (err) {
+      setStatus(`Error: ${err.message}`);
+    }
+  }, [lat, lng, constellation, maxSats, mode]);
+
+  useEffect(() => {
+    fetchSats();
+  }, [fetchSats]);
+
+  // Update satellite positions & coverage
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const viewer = viewerRef.current;
+      if (!viewer) return;
+
+      sats.forEach((sat) => {
+        const satEntity = viewer.entities.getById(`sat-${sat.noradId}`);
+        const fpEntity = viewer.entities.getById(`fp-${sat.noradId}`);
+        if (!satEntity) return;
+
+        satEntity.position = Cesium.Cartesian3.fromDegrees(
+          sat.lng, sat.lat, sat.altitudeKm * 1000
+        );
+
+        if (fpEntity && showCoverage && sat.coverageRadiusKm) {
+          fpEntity.position = Cesium.Cartesian3.fromDegrees(sat.lng, sat.lat, 0);
+          fpEntity.ellipse.semiMajorAxis = sat.coverageRadiusKm * 1000;
+          fpEntity.ellipse.semiMinorAxis = sat.coverageRadiusKm * 1000;
+        }
+      });
+    }, 1000 / UPDATE_HZ);
+
+    return () => clearInterval(interval);
+  }, [sats, showCoverage]);
+
+  // Toggle orbit paths
+  const toggleSelectSatellite = useCallback((id) => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+
+    const sat = sats.find(s => s.noradId === id);
+    if (!sat) return;
+
+    if (selectedSatIds.current.has(id)) {
+      selectedSatIds.current.delete(id);
+      const ent = orbitEntities.current.get(id);
+      if (ent) { viewer.entities.remove(ent); orbitEntities.current.delete(id); }
+    } else {
+      selectedSatIds.current.add(id);
+      const positions = [];
+      const now = new Date();
+      const halfSpanSec = (ORBIT_SPAN_MINUTES * 60) / 2;
+      const stepSec = Math.max(10, Math.round((ORBIT_SPAN_MINUTES * 60) / ORBIT_POINTS));
+      const satrec = window.satellite?.twoline2satrec(sat.line1, sat.line2);
+      if (!satrec) return;
+
+      for (let dt = -halfSpanSec; dt <= halfSpanSec; dt += stepSec) {
+        const t = new Date(now.getTime() + dt * 1000);
+        const pv = window.satellite.propagate(satrec, t);
+        if (!pv.position) continue;
+        const gmst = window.satellite.gstime(t);
+        const ecf = window.satellite.eciToEcf(pv.position, gmst);
+        positions.push(new Cesium.Cartesian3(ecf.x * 1000, ecf.y * 1000, ecf.z * 1000));
+      }
+
+      const orbitEnt = viewer.entities.add({
+        id: `orbit-${id}`,
+        name: `${sat.noradId} orbit`,
+        polyline: { positions, width: 2, material: Cesium.Color.YELLOW.withAlpha(0.9), clampToGround: false }
+      });
+      orbitEntities.current.set(id, orbitEnt);
+    }
+  }, [sats]);
+
+  // Render satellites & footprints
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer) return;
 
     viewer.entities.removeAll();
 
+    // Ground station
     viewer.entities.add({
-      position: Cesium.Cartesian3.fromDegrees(lng, lat, 0), // ✅ fixed
-      point: {
-        pixelSize: 12,
-        color: Cesium.Color.YELLOW, // ✅ fixed
-      },
-      label: {
-        text: "Ground Station",
-        font: "12px sans-serif",
-        fillColor: Cesium.Color.WHITE, // ✅ fixed
-        pixelOffset: new Cesium.Cartesian2(0, -20), // ✅ fixed
-      },
+      position: Cesium.Cartesian3.fromDegrees(lng, lat, 0),
+      point: { pixelSize: 12, color: Cesium.Color.YELLOW },
+      label: { text: "Ground Station", font: "12px sans-serif", fillColor: Cesium.Color.WHITE },
     });
 
-    positions.forEach((sat) => {
-      if (sat.lat == null || sat.lng == null) return;
+    sats.forEach(sat => {
+      // Point color: yellow if available, cyan otherwise
+      const pointColor = sat.available ? Cesium.Color.YELLOW : Cesium.Color.CYAN;
+      const pointSize = sat.available ? 6 : 4;
 
       viewer.entities.add({
-        position: Cesium.Cartesian3.fromDegrees( // ✅ fixed
-          sat.lng,
-          sat.lat,
-          (sat.altitudeKm ?? 550) * 1000
-        ),
-        point: {
-          pixelSize: 6,
-          color: sat.available ? Cesium.Color.LIME : Cesium.Color.RED, // ✅ fixed
-        },
+        id: `sat-${sat.noradId}`,
+        position: Cesium.Cartesian3.fromDegrees(sat.lng, sat.lat, sat.altitudeKm * 1000),
+        point: { pixelSize: pointSize, color: pointColor },
+        properties: new Cesium.PropertyBag({ _kind: "sat", _sid: sat.noradId }),
+        description: `<b>${sat.noradId}</b> | Elev: ${sat.elevation}° | Range: ${sat.rangeKm}km<br>Click to toggle orbit`
       });
-    });
-  }, [positions, lat, lng]);
 
-  return <div ref={containerRef} style={{ width: "100%", height: "70vh" }} />;
+      // Draw coverage if showCoverage is true
+      // For station mode: only draw if satellite is available
+      // For full constellation: draw for all satellites
+      const shouldDrawCoverage = showCoverage && sat.coverageRadiusKm &&
+        (mode === "constellation" || sat.available);
+
+      if (shouldDrawCoverage) {
+        viewer.entities.add({
+          id: `fp-${sat.noradId}`,
+          position: Cesium.Cartesian3.fromDegrees(sat.lng, sat.lat, 0),
+          ellipse: {
+            semiMajorAxis: sat.coverageRadiusKm * 1000,
+            semiMinorAxis: sat.coverageRadiusKm * 1000,
+            material: Cesium.Color.CYAN.withAlpha(0.05),
+            outline: true,
+            outlineColor: Cesium.Color.CYAN.withAlpha(0.45),
+          },
+        });
+      }
+    });
+  }, [sats, showCoverage, lat, lng, mode]);
+
+  return (
+    <div style={{ height: "80vh", position: "relative" }}>
+      <div
+        style={{
+          position: "absolute",
+          top: 10,
+          left: 10,
+          zIndex: 1000,
+          background: "rgba(0,0,0,0.7)",
+          padding: 10,
+          borderRadius: 5,
+        }}
+      >
+        <label>
+          <input
+            type="checkbox"
+            checked={showCoverage}
+            onChange={e => setShowCoverage(e.target.checked)}
+          />{" "}
+          Coverage
+        </label>
+
+        <div style={{ fontSize: "12px", color: "white", marginTop: 4 }}>
+          {status}
+        </div>
+      </div>
+
+      <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+    </div>
+  );
 }
 
 export default CesiumGlobe;
