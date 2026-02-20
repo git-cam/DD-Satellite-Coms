@@ -11,7 +11,7 @@ function App() {
   const [coverage1, setCoverage1] = useState([]);
   const [heatmapData, setHeatmapData] = useState([]);
   const [positions, setPositions] = useState([]);
-  const [mode, setMode] = useState('station');
+  const [mode, setMode] = useState('station'); //'station' or 'constellation'
   const globeRef = useRef();
 
   // Live stats
@@ -19,8 +19,8 @@ function App() {
 
   const fetchBoth = useCallback(async () => {
     const params = new URLSearchParams({ 
-      lat: lat.toFixed(4), 
-      lng: lng.toFixed(4), 
+      lng: lng.toFixed(4),
+      lat: lat.toFixed(4),
       alt: '100', 
       maxSats: maxSats.toString() 
     });
@@ -35,8 +35,8 @@ function App() {
 
         const globeSats = sats.map(s => ({
           noradId: s.noradId,
-          lat: s.lat,
           lng: s.lng,
+          lat: s.lat,
           altitude: s.altitudeKm / 6371,
           size: Math.max(0.3, Math.abs(s.elevation || 0) / 20),
           available: s.available
@@ -48,7 +48,7 @@ function App() {
     } catch (error) {
       console.error('Fetch failed:', error);
     }
-  }, [constellation1, lat, lng, maxSats, generateHeatmap]);
+  }, [constellation1, lng, lat, maxSats, generateHeatmap]);
 
   useEffect(() => {
     fetchBoth();  // Initial fetch

@@ -159,7 +159,7 @@ app.get('/api/:constellation/coverage', async (req, res) => {
     const filtered = results.filter(Boolean);
     const visibleCount = filtered.filter(r => r.available).length;
     console.log(`📡 ${constellation}: ${visibleCount}/${filtered.length} visible`);
-console.log('maxSats received:', maxSats);
+    console.log('maxSats received:', maxSats);
 
     res.json({ observer, constellation, satellites: filtered });
 
@@ -179,36 +179,50 @@ app.get('/api/constellation-view', async (req, res) => {
     mode = 'station' // station | constellation
   } = req.query;
 
+  const observer = { lat: Number(lat), lng: Number(lng), alt: Number(alt) };
+
   try {
-    const tleList = await getConstellationTLEs(constellation, Number(maxSats));
-    const observer = { lat: Number(lat), lng: Number(lng), alt: Number(alt) };
+    let satellites = [];
 
-    const results = await Promise.all(
-      tleList.map(sat => {
-        try {
-          return computeSatelliteCoverage(
-            sat,
-            observer,
-            constellation
-          );
-        } catch {
-          return null;
-        }
-      })
-    );
+    if (mode === 'constellation') {
+      // Fetch all constellations
+      const constellations = ['iridium', 'starlink', 'kuiper'];
+      for (const name of constellations) {
+        const tleList = await getConstellationTLEs(name, Number(maxSats));
+        const sats = await Promise.all(
+          tleList.map(sat => {
+            try {
+              return computeSatelliteCoverage(sat, observer, name);
+            } catch {
+              return null;
+            }
+          })
+        );
+        satellites.push(...sats.filter(Boolean));
+      }
+    } else {
+      // Station mode: just the selected constellation
+      const tleList = await getConstellationTLEs(constellation, Number(maxSats));
+      const sats = await Promise.all(
+        tleList.map(sat => {
+          try {
+            return computeSatelliteCoverage(sat, observer, constellation);
+          } catch {
+            return null;
+          }
+        })
+      );
+      satellites = sats.filter(Boolean);
+    }
 
-    const satellites = results.filter(Boolean);
+    // Filter only visible satellites in station mode
+    const filtered = mode === 'station'
+      ? satellites.filter(s => s.available)
+      : satellites;
 
-    // Server decides what to send
-    const filtered =
-      mode === 'station'
-        ? satellites.filter(s => s.available)
-        : satellites;
-
-    const camera =
-      mode === 'constellation'
-        ? { lat: 0, lng: 0, height: 20000000 }
-        : { lat: observer.lat, lng: observer.lng, height: 10000000 };
+    const camera = mode === 'constellation'
+      ? { lat: observer.lat, lng: observer.lng, height: 15000000 }
+      : { lat: observer.lat, lng: observer.lng, height: 10000000 };
 
     res.json({
       mode,
